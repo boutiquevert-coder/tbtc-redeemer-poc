@@ -1,0 +1,70 @@
+## PoC Evidence — L2BTCRedeemerWormhole: unvalidated recipientChain
+## Verified against: https://github.com/keep-network/tbtc-v2
+## Date: May 2026
+
+================================================================
+STEP 1 — L2BTCDepositorWormhole (sibling) CORRECTLY stores and
+         validates the L1 chain ID
+================================================================
+
+$ cat contracts/cross-chain/wormhole/L2BTCDepositorWormhole.sol | grep -A3 -B3 "l1ChainId"
+
+    IWormholeGateway public l2WormholeGateway;
+    /// @notice Wormhole chain ID of the corresponding L1 chain.
+    uint16 public l1ChainId;                        <-- STORED
+    address public l1BtcDepositor;
+
+    function initialize(
+        address _wormholeRelayer,
+        address _l2WormholeGateway,
+        uint16 _l1ChainId
+    ) external initializer {
+        l1ChainId = _l1ChainId;                     <-- SET IN INITIALIZE
+    }
+
+        require(
+            sourceChain == l1ChainId,               <-- VALIDATED
+            "Source chain is not the expected L1 chain"
+        );
+
+================================================================
+STEP 2 — L2BTCRedeemerWormhole (vulnerable) passes recipientChain
+         directly from user input — NO validation whatsoever
+================================================================
+
+$ cat contracts/cross-chain/wormhole/L2BTCRedeemerWormhole.sol | grep -A3 -B3 "recipientChain"
+
+    /// @param recipientChain The Wormhole chain ID of the recipient chain.
+    function requestRedemption(
+        uint256 amount,
+        uint16 recipientChain,         <-- USER-CONTROLLED, NEVER VALIDATED
+        bytes calldata redeemerOutputScript,
+        uint32 nonce
+    ) external payable nonReentrant returns (uint64) {
+
+        return
+            gateway.sendTbtcWithPayloadToNativeChain{value: msg.value}(
+                amount,
+                recipientChain,        <-- PASSED DIRECTLY, ANY CHAIN ACCEPTED
+                l1BtcRedeemerWormholeAddress,
+                nonce,
+                redeemerOutputScript
+            );
+    }
+
+================================================================
+CONCLUSION
+================================================================
+
+L2BTCDepositorWormhole  — stores l1ChainId: YES | validates: YES
+L2BTCRedeemerWormhole   — stores l1ChainId: NO  | validates: NO
+
+A user calling requestRedemption() with any wrong Wormhole chain ID
+(e.g. Polygon=5, Solana=1, BNB=4) will:
+  1. Have their tBTC permanently burned on L2
+  2. Send a Wormhole message to a chain with no L1BTCRedeemerWormhole
+  3. Never receive their BTC
+  4. Have no recovery mechanism available
+
+Fix: add uint16 public l1ChainId and require(recipientChain == l1ChainId)
+     consistent with L2BTCDepositorWormhole implementation.
